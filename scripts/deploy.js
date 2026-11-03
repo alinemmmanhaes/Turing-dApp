@@ -1,55 +1,44 @@
-// This is a script for deploying your contracts. You can adapt it to deploy
-// yours, or create new ones.
-
+// Deploy do contrato Turing e cópia dos artefatos para o frontend.
+// Uso: npx hardhat run scripts/deploy.js --network localhost
 const path = require("path");
 
 async function main() {
-  // This is just a convenience check
   if (network.name === "hardhat") {
     console.warn(
-      "You are trying to deploy a contract to the Hardhat Network, which" +
-        "gets automatically created and destroyed every time. Use the Hardhat" +
-        " option '--network localhost'"
+      "Você está rodando na rede 'hardhat' efêmera. Use --network localhost " +
+        "com `npx hardhat node` em outro terminal."
     );
   }
 
-  // ethers is available in the global scope
   const [deployer] = await ethers.getSigners();
-  console.log(
-    "Deploying the contracts with the account:",
-    await deployer.getAddress()
-  );
+  console.log("Deploy feito pela conta:", await deployer.getAddress());
 
-  console.log("Account balance:", (await deployer.getBalance()).toString());
+  const Turing = await ethers.getContractFactory("Turing");
+  const turing = await Turing.deploy();
+  await turing.deployed();
 
-  const Token = await ethers.getContractFactory("Turing");
-  const token = await Token.deploy();
-  await token.deployed();
+  console.log("Turing deployed em:", turing.address);
 
-  console.log("Token address:", token.address);
-
-  // We also save the contract's artifacts and address in the frontend directory
-  saveFrontendFiles(token);
+  saveFrontendFiles(turing);
 }
 
-function saveFrontendFiles(token) {
+function saveFrontendFiles(turing) {
   const fs = require("fs");
   const contractsDir = path.join(__dirname, "..", "frontend", "src", "contracts");
 
   if (!fs.existsSync(contractsDir)) {
-    fs.mkdirSync(contractsDir);
+    fs.mkdirSync(contractsDir, { recursive: true });
   }
 
   fs.writeFileSync(
     path.join(contractsDir, "contract-address.json"),
-    JSON.stringify({ Token: token.address }, undefined, 2)
+    JSON.stringify({ Turing: turing.address }, undefined, 2)
   );
 
-  const TokenArtifact = artifacts.readArtifactSync("Turing");
-
+  const TuringArtifact = artifacts.readArtifactSync("Turing");
   fs.writeFileSync(
-    path.join(contractsDir, "Token.json"),
-    JSON.stringify(TokenArtifact, null, 2)
+    path.join(contractsDir, "Turing.json"),
+    JSON.stringify(TuringArtifact, null, 2)
   );
 }
 

@@ -1,53 +1,40 @@
 import React from "react";
 
-// We'll use ethers to interact with the Ethereum network and our contract
 import { ethers } from "ethers";
 
-// We import the contract's artifacts and address here, as we are going to be
-// using them with ethers
-import TokenArtifact from "../contracts/Token.json";
+// Artefatos gerados pelo scripts/deploy.js (ver abaixo)
+import TuringArtifact from "../contracts/Turing.json";
 import contractAddress from "../contracts/contract-address.json";
 
-// All the logic of this dapp is contained in the Dapp component.
-// These other components are just presentational ones: they don't have any
-// logic. They just render HTML.
+import { CODINOMES, STUDENTS, TEACHER } from "../users";
+
 import { NoWalletDetected } from "./NoWalletDetected";
 import { ConnectWallet } from "./ConnectWallet";
 import { Loading } from "./Loading";
-import { Transfer } from "./Transfer";
+import { Vote } from "./Vote";
+import { AdminPanel } from "./AdminPanel";
+import { Ranking } from "./Ranking";
 import { TransactionErrorMessage } from "./TransactionErrorMessage";
 import { WaitingForTransactionMessage } from "./WaitingForTransactionMessage";
-import { NoTokensMessage } from "./NoTokensMessage";
 
-// This is the default id used by the Hardhat Network
-const HARDHAT_NETWORK_ID = '31337';
+// Id padrão da rede Hardhat
+const HARDHAT_NETWORK_ID = "31337";
 
-// This is an error code that indicates that the user canceled a transaction
-const ERROR_CODE_TX_REJECTED_BY_USER = 4001;
+// Códigos de "usuário rejeitou a transação" (MetaMask / ethers v5)
+const USER_REJECTED_CODES = [4001, "ACTION_REJECTED"];
 
-// This component is in charge of doing these things:
-//   1. It connects to the user's wallet
-//   2. Initializes ethers and the Token contract
-//   3. Polls the user balance to keep it updated.
-//   4. Transfers tokens by sending transactions
-//   5. Renders the whole application
-//
-// Note that (3) and (4) are specific of this sample application, but they show
-// you how to keep your Dapp and contract's state in sync,  and how to send a
-// transaction.
 export class Dapp extends React.Component {
   constructor(props) {
     super(props);
 
-    // We store multiple things in Dapp's state.
-    // You don't need to follow this pattern, but it's an useful example.
     this.initialState = {
-      // The info of the token (i.e. It's Name and symbol)
-      tokenData: undefined,
-      // The user's address and balance
+      tokenData: undefined, // { name, symbol, decimals }
       selectedAddress: undefined,
-      balance: undefined,
-      // The ID about transactions being sent, and any possible error with them
+      balance: undefined, // saldo do usuário conectado (BigNumber)
+      myCodinome: null, // codinome do usuário conectado (null = não cadastrado)
+      isAdmin: false, // owner ou professora
+      voting: undefined, // votação ativa?
+      ranking: undefined, // [{ codinome, balance, display }]
       txBeingSent: undefined,
       transactionError: undefined,
       networkError: undefined,
@@ -57,49 +44,49 @@ export class Dapp extends React.Component {
   }
 
   render() {
-    // Ethereum wallets inject the window.ethereum object. If it hasn't been
-    // injected, we instruct the user to install a wallet.
     if (window.ethereum === undefined) {
       return <NoWalletDetected />;
     }
 
-    // The next thing we need to do, is to ask the user to connect their wallet.
-    // When the wallet gets connected, we are going to save the users's address
-    // in the component's state. So, if it hasn't been saved yet, we have
-    // to show the ConnectWallet component.
-    //
-    // Note that we pass it a callback that is going to be called when the user
-    // clicks a button. This callback just calls the _connectWallet method.
     if (!this.state.selectedAddress) {
       return (
-        <ConnectWallet 
-          connectWallet={() => this._connectWallet()} 
+        <ConnectWallet
+          connectWallet={() => this._connectWallet()}
           networkError={this.state.networkError}
           dismiss={() => this._dismissNetworkError()}
         />
       );
     }
 
-    // If the token data or the user's balance hasn't loaded yet, we show
-    // a loading component.
-    if (!this.state.tokenData || !this.state.balance) {
+    if (
+      !this.state.tokenData ||
+      !this.state.balance ||
+      !this.state.ranking ||
+      this.state.voting === undefined
+    ) {
       return <Loading />;
     }
 
-    // If everything is loaded, we render the application.
+    const { tokenData, myCodinome, isAdmin, voting, ranking } = this.state;
+    const busy = this.state.txBeingSent !== undefined;
+
     return (
       <div className="container p-4">
         <div className="row">
           <div className="col-12">
             <h1>
-              {this.state.tokenData.name} ({this.state.tokenData.symbol})
+              {tokenData.name} ({tokenData.symbol})
             </h1>
             <p>
-              Welcome <b>{this.state.selectedAddress}</b>, you have{" "}
+              Conta: <b>{this.state.selectedAddress}</b>
+              <br />
+              Usuário: <b>{myCodinome || "não cadastrado"}</b> | Perfil:{" "}
+              <b>{isAdmin ? "Superusuário" : "Comum"}</b>
+              <br />
+              Votação: <b>{voting ? "ativa 🟢" : "pausada 🔴"}</b> | Seu saldo:{" "}
               <b>
-                {this.state.balance.toString()} {this.state.tokenData.symbol}
+                {this._fmt(this.state.balance)} {tokenData.symbol}
               </b>
-              .
             </p>
           </div>
         </div>
@@ -108,19 +95,10 @@ export class Dapp extends React.Component {
 
         <div className="row">
           <div className="col-12">
-            {/* 
-              Sending a transaction isn't an immediate action. You have to wait
-              for it to be mined.
-              If we are waiting for one, we show a message here.
-            */}
             {this.state.txBeingSent && (
               <WaitingForTransactionMessage txHash={this.state.txBeingSent} />
             )}
 
-            {/* 
-              Sending a transaction can fail in multiple ways. 
-              If that happened, we show a message here.
-            */}
             {this.state.transactionError && (
               <TransactionErrorMessage
                 message={this._getRpcErrorMessage(this.state.transactionError)}
@@ -131,28 +109,62 @@ export class Dapp extends React.Component {
         </div>
 
         <div className="row">
-          <div className="col-12">
-            {/*
-              If the user has no tokens, we don't show the Transfer form
-            */}
-            {this.state.balance.eq(0) && (
-              <NoTokensMessage selectedAddress={this.state.selectedAddress} />
+          <div className="col-md-6">
+            {/* Votar: apenas usuários cadastrados (não pode votar em si mesmo) */}
+            {myCodinome || isAdmin ? (
+              <>
+              {!myCodinome && (
+                <div className="alert alert-info">
+                  Esta conta de superusuário não está na tabela de usuários.
+                  O contrato só aceita votos de contas cadastradas, então o
+                  voto será recusado. Cadastre-a com updateUser ou use a conta
+                  da professora.
+                </div>
+              )}
+              <Vote
+                candidates={STUDENTS.filter((c) => c !== myCodinome)}
+                votingActive={voting}
+                busy={busy}
+                voteFor={(codinome, amount) =>
+                  this._sendTx(() => this._token.vote(codinome, amount))
+                }
+              />
+              </>
+            ) : (
+              <div className="alert alert-warning">
+                Esta conta não está cadastrada no contrato, então não pode votar.
+              </div>
             )}
 
-            {/*
-              This component displays a form that the user can use to send a 
-              transaction and transfer some tokens.
-              The component doesn't have logic, it just calls the transferTokens
-              callback.
-            */}
-            {this.state.balance.gt(0) && (
-              <Transfer
-                transferTokens={(to, amount) =>
-                  this._transferTokens(to, amount)
+            {/* Funções administrativas */}
+            {isAdmin && (
+              <AdminPanel
+                students={STUDENTS}
+                codinomes={CODINOMES}
+                votingActive={voting}
+                busy={busy}
+                issueToken={(codinome, amount) =>
+                  this._sendTx(() => this._token.issueToken(codinome, amount))
                 }
-                tokenSymbol={this.state.tokenData.symbol}
+                updateUser={(codinome, address) => {
+                  if (!ethers.utils.isAddress(address)) {
+                    this.setState({
+                      transactionError: new Error("Endereço inválido."),
+                    });
+                    return;
+                  }
+                  this._sendTx(() =>
+                    this._token.updateUser(codinome, address)
+                  );
+                }}
+                votingOn={() => this._sendTx(() => this._token.votingOn())}
+                votingOff={() => this._sendTx(() => this._token.votingOff())}
               />
             )}
+          </div>
+
+          <div className="col-md-6">
+            <Ranking ranking={ranking} />
           </div>
         </div>
       </div>
@@ -160,84 +172,61 @@ export class Dapp extends React.Component {
   }
 
   componentWillUnmount() {
-    // We poll the user's balance, so we have to stop doing that when Dapp
-    // gets unmounted
     this._stopPollingData();
   }
 
   async _connectWallet() {
-    // This method is run when the user clicks the Connect. It connects the
-    // dapp to the user's wallet, and initializes it.
+    const [selectedAddress] = await window.ethereum.request({
+      method: "eth_requestAccounts",
+    });
 
-    // To connect to the user's wallet, we have to run this method.
-    // It returns a promise that will resolve to the user's address.
-    const [selectedAddress] = await window.ethereum.request({ method: 'eth_requestAccounts' });
-
-    // Once we have the address, we can initialize the application.
-
-    // First we check the network
-    this._checkNetwork();
+    await this._checkNetwork();
 
     this._initialize(selectedAddress);
 
-    // We reinitialize it whenever the user changes their account.
-    window.ethereum.on("accountsChanged", ([newAddress]) => {
-      this._stopPollingData();
-      // `accountsChanged` event can be triggered with an undefined newAddress.
-      // This happens when the user removes the Dapp from the "Connected
-      // list of sites allowed access to your addresses" (Metamask > Settings > Connections)
-      // To avoid errors, we reset the dapp state 
-      if (newAddress === undefined) {
-        return this._resetState();
-      }
-      
-      this._initialize(newAddress);
-    });
+    // Registra o listener uma única vez (evita acumular a cada conexão)
+    if (!this._accountsListenerSet) {
+      this._accountsListenerSet = true;
+      window.ethereum.on("accountsChanged", ([newAddress]) => {
+        this._stopPollingData();
+        if (newAddress === undefined) {
+          return this._resetState();
+        }
+        this._initialize(newAddress);
+      });
+    }
   }
 
   _initialize(userAddress) {
-    // This method initializes the dapp
-
-    // We first store the user's address in the component's state
+    // Limpa dados da conta anterior; o Loading aparece até a 1ª leitura
     this.setState({
       selectedAddress: userAddress,
+      balance: undefined,
+      myCodinome: null,
+      isAdmin: false,
+      ranking: undefined,
     });
 
-    // Then, we initialize ethers, fetch the token's data, and start polling
-    // for the user's balance.
-
-    // Fetching the token data and the user's balance are specific to this
-    // sample project, but you can reuse the same initialization pattern.
     this._initializeEthers();
     this._getTokenData();
     this._startPollingData();
   }
 
-  async _initializeEthers() {
-    // We first initialize ethers by creating a provider using window.ethereum
+  _initializeEthers() {
     this._provider = new ethers.providers.Web3Provider(window.ethereum);
 
-    // Then, we initialize the contract using that provider and the token's
-    // artifact. You can do this same thing with your contracts.
     this._token = new ethers.Contract(
-      contractAddress.Token,
-      TokenArtifact.abi,
+      contractAddress.Turing,
+      TuringArtifact.abi,
       this._provider.getSigner(0)
     );
   }
 
-  // The next two methods are needed to start and stop polling data. While
-  // the data being polled here is specific to this example, you can use this
-  // pattern to read any data from your contracts.
-  //
-  // Note that if you don't need it to update in near real time, you probably
-  // don't need to poll it. If that's the case, you can just fetch it when you
-  // initialize the app, as we do with the token data.
+  // Ranking via polling no balanceOf() (opção (i) do enunciado)
   _startPollingData() {
-    this._pollDataInterval = setInterval(() => this._updateBalance(), 1000);
-
-    // We run it once immediately so we don't have to wait for it
-    this._updateBalance();
+    this._stopPollingData();
+    this._pollDataInterval = setInterval(() => this._updateData(), 1000);
+    this._updateData();
   }
 
   _stopPollingData() {
@@ -245,118 +234,162 @@ export class Dapp extends React.Component {
     this._pollDataInterval = undefined;
   }
 
-  // The next two methods just read from the contract and store the results
-  // in the component state.
   async _getTokenData() {
     const name = await this._token.name();
     const symbol = await this._token.symbol();
+    const decimals = await this._token.decimals();
 
-    this.setState({ tokenData: { name, symbol } });
+    this.setState({ tokenData: { name, symbol, decimals } });
   }
 
-  async _updateBalance() {
-    const balance = await this._token.balanceOf(this.state.selectedAddress);
-    this.setState({ balance });
-  }
-
-  // This method sends an ethereum transaction to transfer tokens.
-  // While this action is specific to this application, it illustrates how to
-  // send a transaction.
-  async _transferTokens(to, amount) {
-    // Sending a transaction is a complex operation:
-    //   - The user can reject it
-    //   - It can fail before reaching the ethereum network (i.e. if the user
-    //     doesn't have ETH for paying for the tx's gas)
-    //   - It has to be mined, so it isn't immediately confirmed.
-    //     Note that some testing networks, like Hardhat Network, do mine
-    //     transactions immediately, but your dapp should be prepared for
-    //     other networks.
-    //   - It can fail once mined.
-    //
-    // This method handles all of those things, so keep reading to learn how to
-    // do it.
+  // Lê do contrato: perfil do usuário, status da votação, saldos e ranking
+  async _updateData() {
+    const token = this._token;
+    const account = this.state.selectedAddress;
+    if (!token || !account) return;
 
     try {
-      // If a transaction fails, we save that error in the component's state.
-      // We only save one such error, so before sending a second transaction, we
-      // clear it.
+      const [owner, voting, balance, ...addrs] = await Promise.all([
+        token.owner(),
+        token.voting(),
+        token.balanceOf(account),
+        ...CODINOMES.map((c) => token.users(c)),
+      ]);
+
+      const addrByName = {};
+      CODINOMES.forEach((c, i) => {
+        addrByName[c] = addrs[i];
+      });
+
+      const me = account.toLowerCase();
+      const myCodinome =
+        CODINOMES.find((c) => addrByName[c].toLowerCase() === me) || null;
+      const isAdmin =
+        owner.toLowerCase() === me ||
+        addrByName[TEACHER].toLowerCase() === me;
+
+      const balances = await Promise.all(
+        STUDENTS.map((c) => token.balanceOf(addrByName[c]))
+      );
+
+      // Se a conta mudou durante as leituras, descarta o resultado antigo
+      if (account !== this.state.selectedAddress) return;
+
+      const ranking = STUDENTS.map((codinome, i) => ({
+        codinome,
+        balance: balances[i],
+      }))
+        .sort((a, b) =>
+          b.balance.gt(a.balance)
+            ? 1
+            : b.balance.lt(a.balance)
+            ? -1
+            : a.codinome.localeCompare(b.codinome)
+        )
+        .map((r) => ({ ...r, display: this._fmt(r.balance) }));
+
+      this.setState({ voting, balance, myCodinome, isAdmin, ranking });
+    } catch (error) {
+      console.error("Erro ao atualizar dados:", error);
+    }
+  }
+
+  // O contrato usa decimals() = 18 (padrão ERC20) e multiplica por 10**18 ao
+  // emitir; aqui convertemos de volta para Turings inteiros.
+  _fmt(bn) {
+    const s = ethers.utils.formatUnits(bn, this.state.tokenData.decimals);
+    return s.endsWith(".0") ? s.slice(0, -2) : s;
+  }
+
+  // Envia uma transação qualquer (vote, issueToken, votingOn, votingOff)
+  async _sendTx(call) {
+    try {
       this._dismissTransactionError();
 
-      // We send the transaction, and save its hash in the Dapp's state. This
-      // way we can indicate that we are waiting for it to be mined.
-      const tx = await this._token.transfer(to, amount);
+      const tx = await call();
       this.setState({ txBeingSent: tx.hash });
 
-      // We use .wait() to wait for the transaction to be mined. This method
-      // returns the transaction's receipt.
       const receipt = await tx.wait();
-
-      // The receipt, contains a status flag, which is 0 to indicate an error.
       if (receipt.status === 0) {
-        // We can't know the exact error that made the transaction fail when it
-        // was mined, so we throw this generic one.
         throw new Error("Transaction failed");
       }
 
-      // If we got here, the transaction was successful, so you may want to
-      // update your state. Here, we update the user's balance.
-      await this._updateBalance();
+      await this._updateData();
     } catch (error) {
-      // We check the error code to see if this error was produced because the
-      // user rejected a tx. If that's the case, we do nothing.
-      if (error.code === ERROR_CODE_TX_REJECTED_BY_USER) {
+      if (USER_REJECTED_CODES.includes(error.code)) {
         return;
       }
-
-      // Other errors are logged and stored in the Dapp's state. This is used to
-      // show them to the user, and for debugging.
       console.error(error);
       this.setState({ transactionError: error });
     } finally {
-      // If we leave the try/catch, we aren't sending a tx anymore, so we clear
-      // this part of the state.
       this.setState({ txBeingSent: undefined });
     }
   }
 
-  // This method just clears part of the state.
   _dismissTransactionError() {
     this.setState({ transactionError: undefined });
   }
 
-  // This method just clears part of the state.
   _dismissNetworkError() {
     this.setState({ networkError: undefined });
   }
 
-  // This is an utility method that turns an RPC error into a human readable
-  // message.
+  // Extrai o motivo do require() do contrato, ex.: "voce ja votou neste codinome".
+  // A MetaMask costuma embrulhar o erro em "Internal JSON-RPC error.", então
+  // procuramos o motivo em qualquer parte do objeto de erro.
   _getRpcErrorMessage(error) {
-    if (error.data) {
-      return error.data.message;
-    }
+    const reasonRegex = /reverted with reason string '([^']*)'/;
 
-    return error.message;
+    let dump = "";
+    try {
+      dump = JSON.stringify(error, Object.getOwnPropertyNames(error));
+    } catch (e) {
+      dump = "";
+    }
+    const found = dump.match(reasonRegex);
+    if (found) return found[1];
+
+    const raw =
+      (error.data && error.data.message) ||
+      (error.error && error.error.message) ||
+      error.reason ||
+      error.message ||
+      "";
+    const match = raw.match(reasonRegex);
+    if (match) return match[1];
+
+    if (raw.includes("Internal JSON-RPC error")) {
+      return (
+        raw +
+        " (abra o console do navegador, F12, para ver o erro completo; " +
+        "confira também o endereço do contrato e o nonce da MetaMask)"
+      );
+    }
+    return raw;
   }
 
-  // This method resets the state
   _resetState() {
     this.setState(this.initialState);
   }
 
   async _switchChain() {
-    const chainIdHex = `0x${HARDHAT_NETWORK_ID.toString(16)}`
+    // (o exemplo original usava "31337".toString(16), que gera um chainId errado)
+    const chainIdHex = `0x${Number(HARDHAT_NETWORK_ID).toString(16)}`;
     await window.ethereum.request({
       method: "wallet_switchEthereumChain",
       params: [{ chainId: chainIdHex }],
     });
-    await this._initialize(this.state.selectedAddress);
   }
 
-  // This method checks if the selected network is Localhost:8545
-  _checkNetwork() {
+  async _checkNetwork() {
     if (window.ethereum.networkVersion !== HARDHAT_NETWORK_ID) {
-      this._switchChain();
+      try {
+        await this._switchChain();
+      } catch (error) {
+        this.setState({
+          networkError: "Conecte a MetaMask à rede Localhost:8545 (chain id 31337).",
+        });
+      }
     }
   }
 }

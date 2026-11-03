@@ -51,7 +51,7 @@ contract Turing is ERC20{
         require(voting == true, "votacao inativa");
 
         string memory voter = codinomeOf[msg.sender];
-        require(bytes(voter).length > 0, "usuario nao autorizado");
+        require(bytes(voter).length > 0, "usuario nao autorizado a votar");
 
         require(users[codinome] != address(0), "codinome inexistente");
         require(users[codinome] != msg.sender, "nao pode votar em si mesmo");
